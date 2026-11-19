@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: finho-prediction
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: API_FOOTBALL_KEY
+        sync: false
+      - key: NODE_ENV
+        value: production
