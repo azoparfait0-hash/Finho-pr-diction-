@@ -25,9 +25,9 @@ app.get("/api/fixtures", async (req, res) => {
             });
         }
 
-        if (!process.env.API_FOOTBALL_KEY) {
+        if (!process.env.GOAL_API_KEY) {
             return res.status(500).json({
-                error: "Clé API non configurée"
+                error: "Clé GOAL API non configurée"
             });
         }
 
@@ -40,27 +40,62 @@ app.get("/api/fixtures", async (req, res) => {
         }
 
         const response = await fetch(
-            `https://v3.football.api-sports.io/fixtures?date=${date}&timezone=Africa/Ouagadougou`,
+            `https://api.goal-api.com/v1/fixtures/date/${date}`,
             {
                 headers: {
-                    "x-apisports-key":
-                        process.env.API_FOOTBALL_KEY
+                    Authorization: `Bearer ${process.env.GOAL_API_KEY}`
                 }
             }
         );
 
-        if (!response.ok) {
-            throw new Error("Erreur API-Football");
-        }
+        const result = await response.json();
 
-        const data = await response.json();
-
-        if (data.errors && Object.keys(data.errors).length) {
-            return res.status(502).json({
-                error: "Erreur retournée par API-Football",
-                details: data.errors
+        if (!response.ok || result.success === false) {
+            return res.status(response.status || 502).json({
+                error: "Erreur GOAL API",
+                details: result.message || result
             });
         }
+
+        const matches = Array.isArray(result.data)
+            ? result.data
+            : [];
+
+        const data = {
+            response: matches.map(match => {
+                const score = String(match.score || "");
+                const parts = score.match(/(\d+)\s*-\s*(\d+)/);
+
+                return {
+                    fixture: {
+                        id: match.id,
+                        date: match.date || match.matchDate ||
+                            match.kickoffUtc || `${date}T12:00:00`,
+                        status: {
+                            short: match.status === "FINISHED"
+                                ? "FT"
+                                : match.status || "NS"
+                        }
+                    },
+                    league: {
+                        name: match.league?.name ||
+                            match.leagueName || "Football"
+                    },
+                    teams: {
+                        home: {
+                            name: match.homeTeam?.name || "Domicile"
+                        },
+                        away: {
+                            name: match.awayTeam?.name || "Extérieur"
+                        }
+                    },
+                    goals: {
+                        home: parts ? Number(parts[1]) : null,
+                        away: parts ? Number(parts[2]) : null
+                    }
+                };
+            })
+        };
 
         cache = {
             data,
@@ -69,101 +104,6 @@ app.get("/api/fixtures", async (req, res) => {
         };
 
         res.json(data);
-
-    } catch (error) {
-        res.status(500).json({
-            error: error.message
-        });
-    }
-});
-
-// Analyse des 5 derniers matchs d'une équipe
-app.get("/api/team-form", async (req, res) => {
-    try {
-        const team = Number(req.query.team);
-
-        if (!Number.isInteger(team) || team <= 0) {
-            return res.status(400).json({
-                error: "Identifiant d'équipe invalide"
-            });
-        }
-
-        if (!process.env.API_FOOTBALL_KEY) {
-            return res.status(500).json({
-                error: "Clé API non configurée"
-            });
-        }
-
-        const response = await fetch(
-            `https://v3.football.api-sports.io/fixtures?team=${team}&last=5&timezone=Africa/Ouagadougou`,
-            {
-                headers: {
-                    "x-apisports-key": process.env.API_FOOTBALL_KEY
-                }
-            }
-        );
-
-        if (!response.ok) {
-            return res.status(502).json({
-                error: "Erreur lors de la récupération des matchs"
-            });
-        }
-
-        const data = await response.json();
-
-        if (data.errors && Object.keys(data.errors).length) {
-            return res.status(502).json({
-                error: "Erreur API-Football",
-                details: data.errors
-            });
-        }
-
-        const matches = (data.response || [])
-            .filter(item =>
-                ["FT", "AET", "PEN"].includes(item.fixture.status.short) &&
-                item.goals.home !== null &&
-                item.goals.away !== null
-            )
-            .map(item => {
-                const isHome = item.teams.home.id === team;
-                const scored = isHome ? item.goals.home : item.goals.away;
-                const conceded = isHome ? item.goals.away : item.goals.home;
-
-                const result = scored > conceded ? "V" :
-                    scored < conceded ? "D" : "N";
-
-                return {
-                    date: item.fixture.date,
-                    competition: item.league.name,
-                    opponent: isHome ? item.teams.away.name : item.teams.home.name,
-                    venue: isHome ? "Domicile" : "Extérieur",
-                    score: `${scored}-${conceded}`,
-                    goalsFor: scored,
-                    goalsAgainst: conceded,
-                    result
-                };
-            });
-
-        const totals = matches.reduce((acc, match) => {
-            acc[match.result]++;
-            acc.goalsFor += match.goalsFor;
-            acc.goalsAgainst += match.goalsAgainst;
-            return acc;
-        }, { V: 0, N: 0, D: 0, goalsFor: 0, goalsAgainst: 0 });
-
-        res.json({
-            teamId: team,
-            matches,
-            summary: {
-                played: matches.length,
-                wins: totals.V,
-                draws: totals.N,
-                losses: totals.D,
-                goalsFor: totals.goalsFor,
-                goalsAgainst: totals.goalsAgainst,
-                points: totals.V * 3 + totals.N
-            }
-        });
 
     } catch (error) {
         res.status(500).json({
