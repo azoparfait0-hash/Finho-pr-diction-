@@ -14,7 +14,10 @@ let cache = {
 
 const analysisCache = new Map();
 
+// =====================================
 // CONNEXION GOAL API
+// =====================================
+
 async function goalApiRequest(path) {
     if (!process.env.GOAL_API_KEY) {
         throw new Error("Clé GOAL API non configurée");
@@ -48,15 +51,30 @@ async function goalApiRequest(path) {
     return result;
 }
 
+// =====================================
 // EXTRACTION DES BUTS
-function getGoals(match) {
-    const home = Number(
-        match.homeTeamFtScore ?? match.homeTeamScore
-    );
+// =====================================
 
-    const away = Number(
-        match.awayTeamFtScore ?? match.awayTeamScore
-    );
+function getGoals(match) {
+    const rawHome =
+        match.homeTeamFtScore ?? match.homeTeamScore;
+
+    const rawAway =
+        match.awayTeamFtScore ?? match.awayTeamScore;
+
+    if (
+        rawHome === null ||
+        rawHome === undefined ||
+        rawAway === null ||
+        rawAway === undefined ||
+        rawHome === "" ||
+        rawAway === ""
+    ) {
+        return null;
+    }
+
+    const home = Number(rawHome);
+    const away = Number(rawAway);
 
     if (
         !Number.isInteger(home) ||
@@ -70,7 +88,10 @@ function getGoals(match) {
     return { home, away };
 }
 
-// RÉCUPÉRATION DES DERNIERS MATCHS
+// =====================================
+// HISTORIQUE DES ÉQUIPES
+// =====================================
+
 async function getTeamHistory(teamId) {
     const result = await goalApiRequest(
         `/teams/${encodeURIComponent(teamId)}/results`
@@ -92,26 +113,36 @@ async function getTeamHistory(teamId) {
 
             return {
                 date: match.matchDate || match.date || "",
-                homeId: match.homeTeamId,
-                awayId: match.awayTeamId,
+                homeId: String(match.homeTeamId || ""),
+                awayId: String(match.awayTeamId || ""),
                 homeGoals: goals.home,
                 awayGoals: goals.away
             };
         })
-        .filter(Boolean)
-        .sort((a, b) =>
-            b.date.localeCompare(a.date)
+        .filter(match =>
+            match &&
+            match.homeId &&
+            match.awayId
         )
+        .sort((a, b) => {
+            const dateA = Date.parse(a.date) || 0;
+            const dateB = Date.parse(b.date) || 0;
+
+            return dateB - dateA;
+        })
         .slice(0, 10);
 }
 
-// STATISTIQUES D'UNE ÉQUIPE
+// =====================================
+// STATISTIQUES PONDÉRÉES
+// =====================================
+
 function calculateTeamStats(matches, teamId, venue) {
-    let games = [];
+    const games = [];
 
     for (const match of matches) {
-        const isHome = match.homeId === teamId;
-        const isAway = match.awayId === teamId;
+        const isHome = String(match.homeId) === String(teamId);
+        const isAway = String(match.awayId) === String(teamId);
 
         if (!isHome && !isAway) continue;
 
@@ -129,9 +160,7 @@ function calculateTeamStats(matches, teamId, venue) {
         });
     }
 
-    const count = games.length;
-
-    if (!count) {
+    if (!games.length) {
         return {
             played: 0,
             scored: 0,
@@ -142,31 +171,81 @@ function calculateTeamStats(matches, teamId, venue) {
         };
     }
 
-    const scored = games.reduce(
-        (sum, game) => sum + game.scored, 0
-    );
+    let totalWeight = 0;
+    let scored = 0;
+    let conceded = 0;
 
-    const conceded = games.reduce(
-        (sum, game) => sum + game.conceded, 0
-    );
+    for (let i = 0; i < games.length; i++) {
+        // Les matchs récents ont plus de poids.
+        const weight = 1 / (1 + i * 0.15);
+
+        totalWeight += weight;
+
+        scored += games[i].scored * weight;
+        conceded += games[i].conceded * weight;
+    }
 
     return {
-        played: count,
-        scored: Number((scored / count).toFixed(2)),
-        conceded: Number((conceded / count).toFixed(2)),
+        played: games.length,
+
+        scored: Number(
+            (scored / totalWeight).toFixed(2)
+        ),
+
+        conceded: Number(
+            (conceded / totalWeight).toFixed(2)
+        ),
+
         wins: games.filter(
-            game => game.scored > game.conceded
+            g => g.scored > g.conceded
         ).length,
+
         draws: games.filter(
-            game => game.scored === game.conceded
+            g => g.scored === g.conceded
         ).length,
+
         losses: games.filter(
-            game => game.scored < game.conceded
+            g => g.scored < g.conceded
         ).length
     };
 }
 
-// CALCUL DE POISSON
+// =====================================
+// COMBINAISON DES STATISTIQUES
+// =====================================
+
+function blendStats(specific, overall) {
+    if (!overall.played) return specific;
+    if (!specific.played) return overall;
+
+    const weight = Math.min(
+        0.6,
+        specific.played / (specific.played + 4)
+    );
+
+    return {
+        played: overall.played,
+
+        scored: Number((
+            specific.scored * weight +
+            overall.scored * (1 - weight)
+        ).toFixed(2)),
+
+        conceded: Number((
+            specific.conceded * weight +
+            overall.conceded * (1 - weight)
+        ).toFixed(2)),
+
+        wins: overall.wins,
+        draws: overall.draws,
+        losses: overall.losses
+    };
+}
+
+// =====================================
+// LOI DE POISSON
+// =====================================
+
 function poisson(lambda, goals) {
     let factorial = 1;
 
@@ -181,7 +260,10 @@ function poisson(lambda, goals) {
     );
 }
 
+// =====================================
 // MOTEUR DE PRÉDICTION FINHO
+// =====================================
+
 function calculatePrediction(homeStats, awayStats) {
     const homeFor = homeStats.scored;
     const homeAgainst = homeStats.conceded;
@@ -197,8 +279,15 @@ function calculatePrediction(homeStats, awayStats) {
         awayFor + homeAgainst
     ) / 2 * 0.94;
 
-    lambdaHome = Math.max(0.15, Math.min(4, lambdaHome));
-    lambdaAway = Math.max(0.15, Math.min(4, lambdaAway));
+    lambdaHome = Math.max(
+        0.15,
+        Math.min(4, lambdaHome)
+    );
+
+    lambdaAway = Math.max(
+        0.15,
+        Math.min(4, lambdaAway)
+    );
 
     let homeWin = 0;
     let draw = 0;
@@ -208,22 +297,35 @@ function calculatePrediction(homeStats, awayStats) {
     let under25 = 0;
     let btts = 0;
 
+    let gridTotal = 0;
+
     const scores = [];
 
-    for (let h = 0; h <= 8; h++) {
-        for (let a = 0; a <= 8; a++) {
+    for (let h = 0; h <= 10; h++) {
+        for (let a = 0; a <= 10; a++) {
             const probability =
                 poisson(lambdaHome, h) *
                 poisson(lambdaAway, a);
 
-            if (h > a) homeWin += probability;
-            else if (h === a) draw += probability;
-            else awayWin += probability;
+            gridTotal += probability;
 
-            if (h + a > 2) over25 += probability;
-            else under25 += probability;
+            if (h > a) {
+                homeWin += probability;
+            } else if (h === a) {
+                draw += probability;
+            } else {
+                awayWin += probability;
+            }
 
-            if (h > 0 && a > 0) btts += probability;
+            if (h + a > 2) {
+                over25 += probability;
+            } else {
+                under25 += probability;
+            }
+
+            if (h > 0 && a > 0) {
+                btts += probability;
+            }
 
             scores.push({
                 score: `${h}-${a}`,
@@ -232,10 +334,10 @@ function calculatePrediction(homeStats, awayStats) {
         }
     }
 
-    const total = homeWin + draw + awayWin;
-
     const percentage = value =>
-        Number((value / total * 100).toFixed(1));
+        Number((
+            value / gridTotal * 100
+        ).toFixed(1));
 
     scores.sort(
         (a, b) => b.probability - a.probability
@@ -252,7 +354,7 @@ function calculatePrediction(homeStats, awayStats) {
             over25: percentage(over25),
             under25: percentage(under25),
             btts: percentage(btts),
-            noBtts: percentage(1 - btts)
+            noBtts: percentage(gridTotal - btts)
         },
 
         expectedGoals: {
@@ -262,14 +364,48 @@ function calculatePrediction(homeStats, awayStats) {
 
         exactScores: scores.slice(0, 5).map(item => ({
             score: item.score,
+
             probability: Number(
-                (item.probability * 100).toFixed(2)
+                (item.probability / gridTotal * 100).toFixed(2)
             )
         }))
     };
 }
 
+// =====================================
+// QUALITÉ DES DONNÉES
+// =====================================
+
+function calculateDataQuality(homeCount, awayCount) {
+    const total = homeCount + awayCount;
+
+    const score = Math.min(
+        100,
+        Math.round(total / 20 * 100)
+    );
+
+    let label;
+
+    if (score >= 80) {
+        label = "Historique complet";
+    } else if (score >= 50) {
+        label = "Historique partiel";
+    } else {
+        label = "Historique insuffisant";
+    }
+
+    return {
+        score,
+        label,
+        matchesAvailable: total,
+        note: "Cet indicateur mesure la quantité de données, pas la précision réelle des prédictions."
+    };
+}
+
+// =====================================
 // MATCHS DU JOUR
+// =====================================
+
 app.get("/api/fixtures", async (req, res) => {
     try {
         const date = req.query.date ||
@@ -302,15 +438,20 @@ app.get("/api/fixtures", async (req, res) => {
         const data = {
             response: matches.map(match => {
                 const score = String(match.score || "");
-                const parts = score.match(/(\d+)\s*-\s*(\d+)/);
+
+                const parts = score.match(
+                    /(\d+)\s*-\s*(\d+)/
+                );
 
                 return {
                     fixture: {
                         id: match.id,
+
                         date: match.kickoffUtc ||
                             match.date ||
                             match.matchDate ||
                             `${date}T12:00:00`,
+
                         status: {
                             short: match.status === "FINISHED"
                                 ? "FT"
@@ -320,7 +461,8 @@ app.get("/api/fixtures", async (req, res) => {
 
                     league: {
                         name: match.league?.name ||
-                            match.leagueName || "Football"
+                            match.leagueName ||
+                            "Football"
                     },
 
                     teams: {
@@ -328,6 +470,7 @@ app.get("/api/fixtures", async (req, res) => {
                             id: match.homeTeam?.id || null,
                             name: match.homeTeam?.name || "Domicile"
                         },
+
                         away: {
                             id: match.awayTeam?.id || null,
                             name: match.awayTeam?.name || "Extérieur"
@@ -358,7 +501,10 @@ app.get("/api/fixtures", async (req, res) => {
     }
 });
 
+// =====================================
 // HISTORIQUE D'UNE ÉQUIPE
+// =====================================
+
 app.get("/api/teams/:id/results", async (req, res) => {
     try {
         const id = req.params.id;
@@ -383,7 +529,10 @@ app.get("/api/teams/:id/results", async (req, res) => {
     }
 });
 
+// =====================================
 // ANALYSE ET PRÉDICTION FINHO
+// =====================================
+
 app.get("/api/analysis/:homeId/:awayId", async (req, res) => {
     try {
         const { homeId, awayId } = req.params;
@@ -399,6 +548,7 @@ app.get("/api/analysis/:homeId/:awayId", async (req, res) => {
         }
 
         const key = `${homeId}_${awayId}`;
+
         const cached = analysisCache.get(key);
 
         if (
@@ -414,76 +564,107 @@ app.get("/api/analysis/:homeId/:awayId", async (req, res) => {
                 getTeamHistory(awayId)
             ]);
 
-        if (!homeHistory.length || !awayHistory.length) {
+        if (
+            homeHistory.length < 3 ||
+            awayHistory.length < 3
+        ) {
             return res.status(422).json({
-                error: "Historique insuffisant pour analyser ce match"
+                error: "Historique insuffisant pour une analyse fiable",
+                homeMatches: homeHistory.length,
+                awayMatches: awayHistory.length
             });
         }
 
+        // Équipe à domicile
+
         const homeHome = calculateTeamStats(
-            homeHistory, homeId, "home"
+            homeHistory,
+            homeId,
+            "home"
         );
 
         const homeAll = calculateTeamStats(
-            homeHistory, homeId, "all"
+            homeHistory,
+            homeId,
+            "all"
         );
 
+        // Équipe à l'extérieur
+
         const awayAway = calculateTeamStats(
-            awayHistory, awayId, "away"
+            awayHistory,
+            awayId,
+            "away"
         );
 
         const awayAll = calculateTeamStats(
-            awayHistory, awayId, "all"
+            awayHistory,
+            awayId,
+            "all"
         );
 
-        // Utiliser les statistiques domicile/extérieur
-        // si au moins 3 matchs sont disponibles.
-        const homeStats = homeHome.played >= 3
-            ? homeHome
-            : homeAll;
+        // Combinaison des performances
 
-        const awayStats = awayAway.played >= 3
-            ? awayAway
-            : awayAll;
+        const homeStats = blendStats(
+            homeHome,
+            homeAll
+        );
+
+        const awayStats = blendStats(
+            awayAway,
+            awayAll
+        );
+
+        // Calcul de la prédiction
 
         const prediction = calculatePrediction(
             homeStats,
             awayStats
         );
 
-        const totalMatches =
-            homeHistory.length + awayHistory.length;
+        // Qualité des données
 
-        const confidence = Math.min(
-            85,
-            Math.round(totalMatches / 20 * 100)
+        const dataQuality = calculateDataQuality(
+            homeHistory.length,
+            awayHistory.length
         );
 
         const data = {
             success: true,
-            engine: "FINHO Statistical Engine",
+
+            engine: "FINHO Statistical Engine V2",
+
             teams: {
                 home: {
                     id: homeId,
+
                     matchesAnalysed: homeHistory.length,
-                    statistics: homeStats
+
+                    statistics: homeStats,
+
+                    overallStatistics: homeAll,
+
+                    homeStatistics: homeHome
                 },
+
                 away: {
                     id: awayId,
+
                     matchesAnalysed: awayHistory.length,
-                    statistics: awayStats
+
+                    statistics: awayStats,
+
+                    overallStatistics: awayAll,
+
+                    awayStatistics: awayAway
                 }
             },
+
             prediction,
-            confidence: {
-                score: confidence,
-                label: confidence >= 70
-                    ? "Données assez nombreuses"
-                    : confidence >= 40
-                        ? "Données limitées"
-                        : "Faible quantité de données"
-            },
-            note: "Estimations statistiques, pas des garanties."
+
+            dataQuality,
+
+            note: "Estimations statistiques basées sur les résultats historiques. Elles ne garantissent pas le résultat d'un match."
         };
 
         analysisCache.set(key, {
@@ -501,7 +682,12 @@ app.get("/api/analysis/:homeId/:awayId", async (req, res) => {
     }
 });
 
+// =====================================
 // DÉMARRAGE
+// =====================================
+
 app.listen(PORT, () => {
-    console.log(`FINHO fonctionne sur le port ${PORT}`);
+    console.log(
+        `FINHO PRÉDICTION fonctionne sur le port ${PORT}`
+    );
 });
