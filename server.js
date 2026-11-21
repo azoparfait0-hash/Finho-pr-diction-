@@ -12,6 +12,34 @@ let cache = {
     time: 0
 };
 
+const predictionCache = new Map();
+
+async function goalApiRequest(path) {
+    if (!process.env.GOAL_API_KEY) {
+        throw new Error("Clé GOAL API non configurée");
+    }
+
+    const response = await fetch(
+        `https://api.goal-api.com/v1${path}`,
+        {
+            headers: {
+                Authorization: `Bearer ${process.env.GOAL_API_KEY}`
+            }
+        }
+    );
+
+    const result = await response.json();
+
+    if (!response.ok || result.success === false) {
+        throw new Error(
+            result.message || "Erreur GOAL API"
+        );
+    }
+
+    return result;
+}
+
+// MATCHS DU JOUR
 app.get("/api/fixtures", async (req, res) => {
     try {
         const date = req.query.date ||
@@ -25,12 +53,6 @@ app.get("/api/fixtures", async (req, res) => {
             });
         }
 
-        if (!process.env.GOAL_API_KEY) {
-            return res.status(500).json({
-                error: "Clé GOAL API non configurée"
-            });
-        }
-
         if (
             cache.data &&
             cache.date === date &&
@@ -39,23 +61,9 @@ app.get("/api/fixtures", async (req, res) => {
             return res.json(cache.data);
         }
 
-        const response = await fetch(
-            `https://api.goal-api.com/v1/fixtures/date/${date}`,
-            {
-                headers: {
-                    Authorization: `Bearer ${process.env.GOAL_API_KEY}`
-                }
-            }
+        const result = await goalApiRequest(
+            `/fixtures/date/${date}`
         );
-
-        const result = await response.json();
-
-        if (!response.ok || result.success === false) {
-            return res.status(response.status || 502).json({
-                error: "Erreur GOAL API",
-                details: result.message || result
-            });
-        }
 
         const matches = Array.isArray(result.data)
             ? result.data
@@ -69,8 +77,10 @@ app.get("/api/fixtures", async (req, res) => {
                 return {
                     fixture: {
                         id: match.id,
-                        date: match.date || match.matchDate ||
-                            match.kickoffUtc || `${date}T12:00:00`,
+                        date: match.kickoffUtc ||
+                            match.date ||
+                            match.matchDate ||
+                            `${date}T12:00:00`,
                         status: {
                             short: match.status === "FINISHED"
                                 ? "FT"
@@ -108,6 +118,42 @@ app.get("/api/fixtures", async (req, res) => {
     } catch (error) {
         res.status(500).json({
             error: error.message
+        });
+    }
+});
+
+// PRÉDICTIONS DU MATCH
+app.get("/api/predictions/:id", async (req, res) => {
+    try {
+        const id = req.params.id;
+
+        if (!id || !/^[a-zA-Z0-9_-]+$/.test(id)) {
+            return res.status(400).json({
+                error: "Identifiant de match invalide"
+            });
+        }
+
+        const cached = predictionCache.get(id);
+
+        if (cached && Date.now() - cached.time < 60 * 60 * 1000) {
+            return res.json(cached.data);
+        }
+
+        const result = await goalApiRequest(
+            `/fixtures/${encodeURIComponent(id)}/predictions`
+        );
+
+        predictionCache.set(id, {
+            data: result,
+            time: Date.now()
+        });
+
+        res.json(result);
+
+    } catch (error) {
+        res.status(502).json({
+            error: "Impossible de récupérer les prédictions",
+            details: error.message
         });
     }
 });
