@@ -14,6 +14,7 @@ let cache = {
 
 const predictionCache = new Map();
 
+// CONNEXION À GOAL API
 async function goalApiRequest(path) {
     if (!process.env.GOAL_API_KEY) {
         throw new Error("Clé GOAL API non configurée");
@@ -23,16 +24,28 @@ async function goalApiRequest(path) {
         `https://api.goal-api.com/v1${path}`,
         {
             headers: {
-                Authorization: `Bearer ${process.env.GOAL_API_KEY}`
+                Authorization: `Bearer ${process.env.GOAL_API_KEY}`,
+                Accept: "application/json"
             }
         }
     );
-if (!response.ok || result.success === false) {
-    throw new Error(JSON.stringify({
-        status: response.status,
-        response: result
-    }));
-}
+
+    let result;
+
+    try {
+        result = await response.json();
+    } catch (error) {
+        throw new Error(
+            `Réponse GOAL API invalide. Statut HTTP : ${response.status}`
+        );
+    }
+
+    if (!response.ok || result.success === false) {
+        throw new Error(JSON.stringify({
+            status: response.status,
+            response: result
+        }));
+    }
 
     return result;
 }
@@ -85,10 +98,12 @@ app.get("/api/fixtures", async (req, res) => {
                                 : match.status || "NS"
                         }
                     },
+
                     league: {
                         name: match.league?.name ||
                             match.leagueName || "Football"
                     },
+
                     teams: {
                         home: {
                             name: match.homeTeam?.name || "Domicile"
@@ -97,6 +112,7 @@ app.get("/api/fixtures", async (req, res) => {
                             name: match.awayTeam?.name || "Extérieur"
                         }
                     },
+
                     goals: {
                         home: parts ? Number(parts[1]) : null,
                         away: parts ? Number(parts[2]) : null
@@ -115,7 +131,8 @@ app.get("/api/fixtures", async (req, res) => {
 
     } catch (error) {
         res.status(500).json({
-            error: error.message
+            error: "Impossible de récupérer les matchs",
+            details: error.message
         });
     }
 });
@@ -133,7 +150,10 @@ app.get("/api/predictions/:id", async (req, res) => {
 
         const cached = predictionCache.get(id);
 
-        if (cached && Date.now() - cached.time < 60 * 60 * 1000) {
+        if (
+            cached &&
+            Date.now() - cached.time < 60 * 60 * 1000
+        ) {
             return res.json(cached.data);
         }
 
@@ -156,6 +176,7 @@ app.get("/api/predictions/:id", async (req, res) => {
     }
 });
 
+// DÉMARRAGE DU SERVEUR
 app.listen(PORT, () => {
     console.log(`FINHO fonctionne sur le port ${PORT}`);
 });
