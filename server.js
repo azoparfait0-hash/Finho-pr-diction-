@@ -27,12 +27,12 @@ async function goalApiRequest(path) {
             }
         }
     );
-
-    const result = await response.json();
-
-    if (!response.ok || result.success === false) {
-        throw new Error(
-            result.message || "Erreur GOAL API"
+if (!response.ok || result.success === false) {
+    throw new Error(JSON.stringify({
+        status: response.status,
+        response: result
+    }));
+}
         );
     }
 
