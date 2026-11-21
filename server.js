@@ -12,6 +12,9 @@ let cache = {
     time: 0
 };
 
+const predictionCache = new Map();
+
+// CONNEXION GOAL API
 async function goalApiRequest(path) {
     if (!process.env.GOAL_API_KEY) {
         throw new Error("Clé GOAL API non configurée");
@@ -154,6 +157,45 @@ app.get("/api/teams/:id/results", async (req, res) => {
     } catch (error) {
         res.status(502).json({
             error: "Impossible de récupérer les résultats",
+            details: error.message
+        });
+    }
+});
+
+// PRÉDICTIONS D'UN MATCH
+app.get("/api/predictions/:id", async (req, res) => {
+    try {
+        const id = req.params.id;
+
+        if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
+            return res.status(400).json({
+                error: "Identifiant de match invalide"
+            });
+        }
+
+        const cached = predictionCache.get(id);
+
+        if (
+            cached &&
+            Date.now() - cached.time < 60 * 60 * 1000
+        ) {
+            return res.json(cached.data);
+        }
+
+        const result = await goalApiRequest(
+            `/fixtures/${encodeURIComponent(id)}/predictions`
+        );
+
+        predictionCache.set(id, {
+            data: result,
+            time: Date.now()
+        });
+
+        res.json(result);
+
+    } catch (error) {
+        res.status(502).json({
+            error: "Impossible de récupérer les prédictions",
             details: error.message
         });
     }
