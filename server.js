@@ -33,8 +33,6 @@ if (!response.ok || result.success === false) {
         response: result
     }));
 }
-        );
-    }
 
     return result;
 }
