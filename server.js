@@ -12,9 +12,6 @@ let cache = {
     time: 0
 };
 
-const predictionCache = new Map();
-
-// CONNEXION À GOAL API
 async function goalApiRequest(path) {
     if (!process.env.GOAL_API_KEY) {
         throw new Error("Clé GOAL API non configurée");
@@ -34,10 +31,8 @@ async function goalApiRequest(path) {
 
     try {
         result = await response.json();
-    } catch (error) {
-        throw new Error(
-            `Réponse GOAL API invalide. Statut HTTP : ${response.status}`
-        );
+    } catch {
+        throw new Error("Réponse GOAL API invalide");
     }
 
     if (!response.ok || result.success === false) {
@@ -106,9 +101,11 @@ app.get("/api/fixtures", async (req, res) => {
 
                     teams: {
                         home: {
+                            id: match.homeTeam?.id || null,
                             name: match.homeTeam?.name || "Domicile"
                         },
                         away: {
+                            id: match.awayTeam?.id || null,
                             name: match.awayTeam?.name || "Extérieur"
                         }
                     },
@@ -137,46 +134,32 @@ app.get("/api/fixtures", async (req, res) => {
     }
 });
 
-// PRÉDICTIONS DU MATCH
-app.get("/api/predictions/:id", async (req, res) => {
+// HISTORIQUE D'UNE ÉQUIPE
+app.get("/api/teams/:id/results", async (req, res) => {
     try {
         const id = req.params.id;
 
-        if (!id || !/^[a-zA-Z0-9_-]+$/.test(id)) {
+        if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
             return res.status(400).json({
-                error: "Identifiant de match invalide"
+                error: "Identifiant invalide"
             });
         }
 
-        const cached = predictionCache.get(id);
-
-        if (
-            cached &&
-            Date.now() - cached.time < 60 * 60 * 1000
-        ) {
-            return res.json(cached.data);
-        }
-
         const result = await goalApiRequest(
-            `/fixtures/${encodeURIComponent(id)}/predictions`
+            `/teams/${encodeURIComponent(id)}/results`
         );
-
-        predictionCache.set(id, {
-            data: result,
-            time: Date.now()
-        });
 
         res.json(result);
 
     } catch (error) {
         res.status(502).json({
-            error: "Impossible de récupérer les prédictions",
+            error: "Impossible de récupérer les résultats",
             details: error.message
         });
     }
 });
 
-// DÉMARRAGE DU SERVEUR
+// DÉMARRAGE
 app.listen(PORT, () => {
     console.log(`FINHO fonctionne sur le port ${PORT}`);
 });
